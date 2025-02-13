@@ -13,7 +13,7 @@ tracked_addresses = {}  # Format: {address: {"name": nama, "chat_id": chat_id}}
 seen_transactions = set()  # Menyimpan hash transaksi yang sudah dikirim
 
 # URL API Blockscout untuk Soneium
-BLOCKSCOUT_API = "https://explorer.soneium.io/api"
+BLOCKSCOUT_API = "https://soneium.blockscout.com/api"
 
 # 🟢 Command untuk Memulai Bot
 @dp.message(Command("start"))
