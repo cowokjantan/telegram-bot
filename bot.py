@@ -1,114 +1,54 @@
 import os
 import asyncio
-import requests
+import aiohttp
 from aiogram import Bot, Dispatcher, types
-from aiogram.filters import Command
+from aiogram.types import Message
 
-TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")  # Ambil token dari Railway ENV
+API_URL = "https://soneium.blockscout.com/api?module=account&action=txlist&address={}"  # API untuk fetch transaksi
+TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
-# Data penyimpanan address dan chat_id
-tracked_addresses = {}  # Format: {address: {"name": nama, "chat_id": chat_id}}
-seen_transactions = set()  # Menyimpan hash transaksi yang sudah dikirim
+# Simpan daftar address dan hash transaksi yang sudah dikirim
+tracked_addresses = {}
+sent_transactions = set()
 
-# URL API Blockscout untuk Soneium
-BLOCKSCOUT_API = "https://soneium.blockscout.com/api"
+@dp.message(commands=["start"])
+async def start_handler(message: Message):
+    await message.answer("Selamat datang! Kirimkan alamat yang ingin Anda lacak.")
 
-# 🟢 Command untuk Memulai Bot
-@dp.message(Command("start"))
-async def start_handler(message: types.Message):
-    await message.answer("👋 Halo! Kirimkan alamat wallet yang ingin kamu lacak:\n\nGunakan format:\n`/add 0x1234abcd Nama_Wallet`")
-
-# 🟢 Command untuk Menambahkan Address
-@dp.message(Command("add"))
-async def add_address(message: types.Message):
-    parts = message.text.split()
-    if len(parts) < 3:
-        await message.answer("⚠️ Format salah! Gunakan: `/add 0x1234abcd Nama_Wallet`")
-        return
-
-    address = parts[1].lower()
-    name = " ".join(parts[2:])
-    tracked_addresses[address] = {"name": name, "chat_id": message.chat.id}
-
-    await message.answer(f"✅ Address `{address}` (`{name}`) berhasil ditambahkan!")
-
-# 🟢 Command untuk Melihat Address yang Dilacak
-@dp.message(Command("list"))
-async def list_addresses(message: types.Message):
-    if not tracked_addresses:
-        await message.answer("⚠️ Belum ada address yang dilacak!")
-        return
-
-    text = "📋 **Address yang Dilacak:**\n\n"
-    for addr, data in tracked_addresses.items():
-        text += f"🔹 `{addr}` - {data['name']}\n"
-
-    await message.answer(text)
-
-# 🟢 Command untuk Menghapus Address
-@dp.message(Command("remove"))
-async def remove_address(message: types.Message):
-    parts = message.text.split()
-    if len(parts) < 2:
-        await message.answer("⚠️ Gunakan: `/remove 0x1234abcd`")
-        return
-
-    address = parts[1].lower()
-    if address in tracked_addresses:
-        del tracked_addresses[address]
-        await message.answer(f"✅ Address `{address}` berhasil dihapus!")
+@dp.message()
+async def add_address_handler(message: Message):
+    address = message.text.strip()
+    if address.startswith("0x") and len(address) == 42:
+        tracked_addresses[address] = "Address " + address[-4:]  # Bisa diberi nama custom
+        await message.answer(f"Alamat {address} ditambahkan ke daftar pelacakan.")
     else:
-        await message.answer(f"⚠️ Address `{address}` tidak ditemukan!")
+        await message.answer("Alamat tidak valid. Harap masukkan alamat Ethereum yang benar.")
 
-# 🔄 Fungsi untuk Mengecek Transaksi Baru
+async def fetch_transactions(address):
+    async with aiohttp.ClientSession() as session:
+        async with session.get(API_URL.format(address)) as response:
+            if response.status == 200:
+                data = await response.json()
+                return data.get("result", [])
+            return []
+
 async def check_transactions():
     while True:
-        print("🔍 Mengecek transaksi baru...")  # Debug log
-        for address, data in tracked_addresses.items():
-            chat_id = data["chat_id"]
-            name = data["name"]
+        for address in list(tracked_addresses.keys()):
+            transactions = await fetch_transactions(address)
+            for tx in transactions:
+                tx_hash = tx["hash"]
+                if tx_hash not in sent_transactions:
+                    sent_transactions.add(tx_hash)
+                    message = f"🚀 Transaksi terdeteksi untuk {tracked_addresses[address]}\n"
+                    message += f"Tx Hash: {tx_hash}\n"
+                    await bot.send_message(chat_id=os.getenv("TELEGRAM_CHAT_ID"), text=message)
+        await asyncio.sleep(30)  # Cek setiap 30 detik
 
-            try:
-                url = f"{BLOCKSCOUT_API}?module=account&action=txlist&address={address}"
-                response = requests.get(url).json()
-
-                if "result" in response:
-                    for tx in response["result"]:
-                        tx_hash = tx["hash"]
-                        from_addr = tx["from"].lower()
-                        to_addr = tx["to"].lower()
-                        value = int(tx["value"]) / (10 ** 18)
-
-                        # Cek apakah transaksi sudah dikirim sebelumnya
-                        if tx_hash in seen_transactions:
-                            continue
-                        seen_transactions.add(tx_hash)
-
-                        # Tentukan jenis transaksi
-                        if from_addr == address:
-                            msg_type = "Send" if value > 0 else "Sell NFT"
-                        elif to_addr == address:
-                            msg_type = "Receive" if value > 0 else "Buy NFT"
-                        else:
-                            continue  # Abaikan transaksi yang tidak relevan
-
-                        # Kirim notifikasi ke Telegram
-                        message = f"🔔 **{msg_type} Alert!**\n\n"
-                        message += f"💳 Address: `{name}`\n"
-                        message += f"🔍 Tx Hash: `{tx_hash}`\n"
-                        message += f"💰 Amount: `{value} SONE`\n"
-                        await bot.send_message(chat_id, message)
-
-            except Exception as e:
-                print(f"⚠️ Error fetching transactions: {e}")
-
-        await asyncio.sleep(30)  # Cek transaksi setiap 30 detik
-
-# 🔥 Jalankan Bot
 async def main():
-    asyncio.create_task(check_transactions())  # Jalankan pengecekan transaksi di background
+    asyncio.create_task(check_transactions())
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
