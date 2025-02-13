@@ -22,29 +22,46 @@ dp = Dispatcher()
 # API Blockscout Soneium
 BLOCKSCOUT_API = "https://soneium.blockscout.com/api"
 
-# Data tracking
+# Data tracking (format: {chat_id: {alamat: nama}})
 tracked_addresses = {}
 last_seen_tx = {}
 
 # Perintah /start
 @dp.message(Command("start"))
 async def start_handler(message: Message):
-    await message.answer("✅ Bot berjalan!\nKirim alamat wallet untuk mulai tracking.")
+    await message.answer("✅ Bot berjalan!\nGunakan /track <alamat> <nama> untuk mulai tracking.")
 
-# Perintah untuk menambahkan alamat
+# Perintah untuk menambahkan alamat dengan nama
 @dp.message(Command("track"))
 async def track_address(message: Message):
-    address = message.text.split(" ")[1] if len(message.text.split(" ")) > 1 else None
-    if not address:
-        await message.answer("❌ Harap masukkan alamat setelah perintah /track")
+    args = message.text.split(" ")
+    if len(args) < 2:
+        await message.answer("❌ Harap masukkan alamat dan (opsional) nama setelah perintah /track.\n\n📌 Contoh: <code>/track 0x1234567890abcdef WalletKu</code>")
         return
+
+    address = args[1]
+    name = " ".join(args[2:]) if len(args) > 2 else address  # Jika tidak ada nama, gunakan alamat
 
     chat_id = message.chat.id
     if chat_id not in tracked_addresses:
-        tracked_addresses[chat_id] = set()
-    
-    tracked_addresses[chat_id].add(address)
-    await message.answer(f"✅ Alamat <code>{address}</code> ditambahkan ke tracking!")
+        tracked_addresses[chat_id] = {}
+
+    tracked_addresses[chat_id][address] = name
+    await message.answer(f"✅ Alamat <code>{address}</code> ({name}) ditambahkan ke tracking!")
+
+# Perintah untuk melihat daftar alamat yang sedang dilacak
+@dp.message(Command("list"))
+async def list_addresses(message: Message):
+    chat_id = message.chat.id
+    if chat_id not in tracked_addresses or not tracked_addresses[chat_id]:
+        await message.answer("📭 Anda belum melacak alamat apa pun.")
+        return
+
+    response = "📋 <b>Daftar Alamat yang Dilacak:</b>\n"
+    for address, name in tracked_addresses[chat_id].items():
+        response += f"🔹 <b>{name}</b>: <code>{address}</code>\n"
+
+    await message.answer(response)
 
 # Fungsi untuk mengambil transaksi dari Blockscout
 async def fetch_transactions(address):
@@ -70,17 +87,10 @@ def get_transaction_type(tx, address):
 
     address = address.lower()
 
-    # Jika address kita adalah pengirim
     if from_addr == address:
-        if "input" in tx and tx["input"] != "0x":
-            return "SELL"  # Kemungkinan transaksi jual NFT
-        return "SEND"
-
-    # Jika address kita adalah penerima
+        return "SEND" if "input" not in tx or tx["input"] == "0x" else "SELL"
     if to_addr == address:
-        if "input" in tx and tx["input"] != "0x":
-            return "BUY"  # Kemungkinan transaksi beli NFT
-        return "RECEIVED"
+        return "RECEIVED" if "input" not in tx or tx["input"] == "0x" else "BUY"
 
     return "UNKNOWN"
 
@@ -88,7 +98,7 @@ def get_transaction_type(tx, address):
 async def check_transactions():
     while True:
         for chat_id, addresses in tracked_addresses.items():
-            for address in addresses:
+            for address, name in addresses.items():
                 transactions = await fetch_transactions(address)
 
                 if not transactions:
@@ -108,13 +118,13 @@ async def check_transactions():
                     # Tentukan jenis transaksi
                     tx_type = get_transaction_type(tx, address)
                     if tx_type == "SEND":
-                        message = f"📤 <b>Send:</b> {tx_link}"
+                        message = f"📤 <b>{name} Mengirim:</b> {tx_link}"
                     elif tx_type == "RECEIVED":
-                        message = f"📥 <b>Received:</b> {tx_link}"
+                        message = f"📥 <b>{name} Menerima:</b> {tx_link}"
                     elif tx_type == "BUY":
-                        message = f"🛒 <b>Buy NFT:</b> {tx_link}"
+                        message = f"🛒 <b>{name} Membeli NFT:</b> {tx_link}"
                     elif tx_type == "SELL":
-                        message = f"💰 <b>Sell NFT:</b> {tx_link}"
+                        message = f"💰 <b>{name} Menjual NFT:</b> {tx_link}"
                     else:
                         continue  # Jika tidak diketahui, skip
 
