@@ -2,8 +2,10 @@ import asyncio
 import os
 import requests
 from aiogram import Bot, Dispatcher, types
+from aiogram.types import Message
+from aiogram.filters import Command
 
-TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")  # Token bot dari Railway
+TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")  # Ambil token dari Railway
 API_URL = "https://soneium.blockscout.com/api"  # API Blockscout Soneium
 
 bot = Bot(token=TOKEN)
@@ -12,19 +14,18 @@ dp = Dispatcher()
 # Database sementara: menyimpan chat_id dan alamat yang ingin dilacak
 tracked_addresses = {}
 
-@dp.message_handler(commands=["start"])
-async def start_handler(message: types.Message):
+async def start_handler(message: Message):
     await message.answer("Halo! Kirimkan alamat wallet yang ingin kamu lacak.")
 
-@dp.message_handler(commands=["track"])
-async def track_address(message: types.Message):
-    address = message.text.split(" ")[1] if len(message.text.split()) > 1 else None
-
-    if not address:
+async def track_address(message: Message):
+    args = message.text.split(" ")
+    if len(args) < 2:
         await message.answer("Gunakan perintah: `/track <alamat_wallet>`")
         return
 
+    address = args[1]
     chat_id = message.chat.id
+
     if chat_id not in tracked_addresses:
         tracked_addresses[chat_id] = set()
     
@@ -44,7 +45,7 @@ async def check_transactions():
                         tx_hash = last_tx["hash"]
                         from_addr = last_tx["from"]
                         to_addr = last_tx["to"]
-                        value = int(last_tx["value"]) / (10**18)  # Ubah dari Wei ke SONE
+                        value = int(last_tx["value"]) / (10**18)  # Konversi dari Wei ke SONE
 
                         message = (f"🚀 **Transaksi Baru Ditemukan** 🚀\n"
                                    f"🔹 **TX Hash:** {tx_hash}\n"
@@ -60,6 +61,9 @@ async def check_transactions():
         await asyncio.sleep(60)  # Cek transaksi setiap 60 detik
 
 async def main():
+    dp.message.register(start_handler, Command("start"))
+    dp.message.register(track_address, Command("track"))
+
     asyncio.create_task(check_transactions())  # Jalankan pemantauan transaksi
     await dp.start_polling(bot)
 
