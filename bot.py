@@ -1,8 +1,7 @@
-import os
 import asyncio
-import aiohttp
+import os
+import requests
 from aiogram import Bot, Dispatcher, types
-from aiogram.filters import Command
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")  # Token bot dari Railway
 API_URL = "https://soneium.blockscout.com/api"  # API Blockscout Soneium
@@ -10,43 +9,58 @@ API_URL = "https://soneium.blockscout.com/api"  # API Blockscout Soneium
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
-# Simpan daftar alamat yang akan dipantau
-tracked_addresses = set()
+# Database sementara: menyimpan chat_id dan alamat yang ingin dilacak
+tracked_addresses = {}
 
-@dp.message(Command("start"))
+@dp.message_handler(commands=["start"])
 async def start_handler(message: types.Message):
-    await message.answer("✅ Bot aktif! Kirim alamat Soneium untuk mulai tracking.")
+    await message.answer("Halo! Kirimkan alamat wallet yang ingin kamu lacak.")
 
-@dp.message()
+@dp.message_handler(commands=["track"])
 async def track_address(message: types.Message):
-    """Menambahkan alamat untuk dipantau"""
-    address = message.text.strip()
-    if address.startswith("0x") and len(address) == 42:
-        tracked_addresses.add(address)
-        await message.answer(f"🔍 Alamat {address} ditambahkan untuk dipantau!")
-    else:
-        await message.answer("⚠️ Masukkan alamat Soneium yang valid.")
+    address = message.text.split(" ")[1] if len(message.text.split()) > 1 else None
+
+    if not address:
+        await message.answer("Gunakan perintah: `/track <alamat_wallet>`")
+        return
+
+    chat_id = message.chat.id
+    if chat_id not in tracked_addresses:
+        tracked_addresses[chat_id] = set()
+    
+    tracked_addresses[chat_id].add(address)
+    await message.answer(f"✅ Alamat {address} telah ditambahkan untuk dilacak!")
 
 async def check_transactions():
-    """Cek transaksi terbaru dari alamat yang dipantau"""
     while True:
-        if tracked_addresses:
-            async with aiohttp.ClientSession() as session:
-                for address in tracked_addresses:
-                    async with session.get(f"{API_URL}?module=account&action=txlist&address={address}") as response:
-                        data = await response.json()
-                        if "result" in data:
-                            for tx in data["result"]:
-                                tx_hash = tx["hash"]
-                                from_addr = tx["from"]
-                                to_addr = tx["to"]
-                                value = int(tx["value"]) / 10**18  # Konversi ke satuan token
-                                message = f"📢 Transaksi Baru!\n\n🔹 TX Hash: {tx_hash}\n🔹 Dari: {from_addr}\n🔹 Ke: {to_addr}\n🔹 Nilai: {value} SONE"
-                                await bot.send_message(chat_id, message)
-        await asyncio.sleep(30)  # Cek setiap 30 detik
+        for chat_id, addresses in tracked_addresses.items():
+            for address in addresses:
+                try:
+                    response = requests.get(f"{API_URL}?module=account&action=txlist&address={address}")
+                    data = response.json()
+
+                    if "result" in data and data["result"]:
+                        last_tx = data["result"][0]  # Ambil transaksi terbaru
+                        tx_hash = last_tx["hash"]
+                        from_addr = last_tx["from"]
+                        to_addr = last_tx["to"]
+                        value = int(last_tx["value"]) / (10**18)  # Ubah dari Wei ke SONE
+
+                        message = (f"🚀 **Transaksi Baru Ditemukan** 🚀\n"
+                                   f"🔹 **TX Hash:** {tx_hash}\n"
+                                   f"🔹 **Dari:** {from_addr}\n"
+                                   f"🔹 **Ke:** {to_addr}\n"
+                                   f"🔹 **Jumlah:** {value} SONE")
+                        
+                        await bot.send_message(chat_id, message, parse_mode="Markdown")
+
+                except Exception as e:
+                    print(f"Error saat mengambil transaksi: {e}")
+
+        await asyncio.sleep(60)  # Cek transaksi setiap 60 detik
 
 async def main():
-    asyncio.create_task(check_transactions())  # Mulai tracking
+    asyncio.create_task(check_transactions())  # Jalankan pemantauan transaksi
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
