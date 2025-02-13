@@ -1,62 +1,53 @@
 import os
-import requests
 import asyncio
+import aiohttp
 from aiogram import Bot, Dispatcher, types
-from aiogram.types import Message
-from aiogram.enums import ParseMode
+from aiogram.filters import Command
 
-# Token Bot Telegram (ambil dari Railway Variables)
-TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")  # Token bot dari Railway
+API_URL = "https://soneium.blockscout.com/api"  # API Blockscout Soneium
 
-# API Blockscout untuk Soneium
-API_URL = "https://soneium.blockscout.com/api?module=account&action=txlist&address="
-
-# Inisialisasi bot dan dispatcher
-bot = Bot(token=TOKEN, parse_mode=ParseMode.HTML)
+bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
-# Menyimpan alamat wallet yang dipantau
+# Simpan daftar alamat yang akan dipantau
 tracked_addresses = set()
 
+@dp.message(Command("start"))
+async def start_handler(message: types.Message):
+    await message.answer("✅ Bot aktif! Kirim alamat Soneium untuk mulai tracking.")
 
-async def start_handler(message: Message):
-    await message.answer("Halo! Kirim alamat wallet Soneium untuk dipantau.")
-
-
-async def track_wallet_handler(message: Message):
+@dp.message()
+async def track_address(message: types.Message):
+    """Menambahkan alamat untuk dipantau"""
     address = message.text.strip()
     if address.startswith("0x") and len(address) == 42:
         tracked_addresses.add(address)
-        await message.answer(f"✅ Alamat <code>{address}</code> ditambahkan untuk dipantau!")
+        await message.answer(f"🔍 Alamat {address} ditambahkan untuk dipantau!")
     else:
-        await message.answer("❌ Alamat tidak valid. Harus berupa address Soneium yang benar.")
-
+        await message.answer("⚠️ Masukkan alamat Soneium yang valid.")
 
 async def check_transactions():
+    """Cek transaksi terbaru dari alamat yang dipantau"""
     while True:
-        for address in tracked_addresses:
-            response = requests.get(f"{API_URL}{address}")
-            data = response.json()
-            if data.get("status") == "1":
-                for tx in data["result"][:1]:  # Ambil transaksi terbaru
-                    msg = (f"🔹 <b>Transaksi Baru!</b>\n"
-                           f"🔹 <b>Hash:</b> {tx['hash']}\n"
-                           f"🔹 <b>Dari:</b> {tx['from']}\n"
-                           f"🔹 <b>Ke:</b> {tx['to']}\n"
-                           f"🔹 <b>Nilai:</b> {tx['value']}")
-                    for chat_id in tracked_addresses:
-                        await bot.send_message(chat_id=chat_id, text=msg)
-        await asyncio.sleep(30)  # Cek transaksi setiap 30 detik
-
+        if tracked_addresses:
+            async with aiohttp.ClientSession() as session:
+                for address in tracked_addresses:
+                    async with session.get(f"{API_URL}?module=account&action=txlist&address={address}") as response:
+                        data = await response.json()
+                        if "result" in data:
+                            for tx in data["result"]:
+                                tx_hash = tx["hash"]
+                                from_addr = tx["from"]
+                                to_addr = tx["to"]
+                                value = int(tx["value"]) / 10**18  # Konversi ke satuan token
+                                message = f"📢 Transaksi Baru!\n\n🔹 TX Hash: {tx_hash}\n🔹 Dari: {from_addr}\n🔹 Ke: {to_addr}\n🔹 Nilai: {value} SONE"
+                                await bot.send_message(chat_id, message)
+        await asyncio.sleep(30)  # Cek setiap 30 detik
 
 async def main():
-    dp.message.register(start_handler, commands={"start"})
-    dp.message.register(track_wallet_handler)
-
-    asyncio.create_task(check_transactions())  # Jalankan tracking transaksi
-    await bot.delete_webhook(drop_pending_updates=True)
+    asyncio.create_task(check_transactions())  # Mulai tracking
     await dp.start_polling(bot)
-
 
 if __name__ == "__main__":
     asyncio.run(main())
